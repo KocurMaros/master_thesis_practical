@@ -1,0 +1,27 @@
+services:
+  tensorflow_gpu:
+    build: .
+    container_name: resEmoteNet
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - PYTHONUNBUFFERED=1
+      - CUDA_LAUNCH_BLOCKING=1  # Add this line
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    ports:
+      - "8888:8888"
+    command: >
+      bash -c "pip install notebook && 
+      jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root"
