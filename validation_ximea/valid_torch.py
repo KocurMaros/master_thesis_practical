@@ -4,28 +4,23 @@ import torch
 import torch.nn.functional as F
 from torchvision import transforms
 from ximea import xiapi
+from approach.ResEmoteNet import ResEmoteNet
 
-# Load the pre-trained PyTorch model
-class CustomEmotionModel(torch.nn.Module):
-    def __init__(self):
-        super(CustomEmotionModel, self).__init__()
-        # Define your model architecture here if not already done
-        pass
 
-    def forward(self, x):
-        # Define the forward pass here
-        pass
-
-# Load the model architecture and weights
-model = CustomEmotionModel()
+# Initialize the model
+model = ResEmoteNet()
 model.load_state_dict(torch.load('best_mode_RAF-DB.pth', map_location=torch.device('cpu')))
 model.eval()
 
 # Define class labels for the 7 classes
-class_labels = ['surprise', 'scared', 'disgust', 'happy', 'sad', 'angry', 'neutral']  # for resEmoteNet
+class_labels = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']  # for ResEmoteNet
 
 # Initialize Haar Cascade for face detection
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+# Load the DNN face detector
+face_net = cv2.dnn.readNetFromCaffe(
+    'deploy.prototxt',
+    'res10_300x300_ssd_iter_140000.caffemodel'
+)
 
 # Open the webcam
 cam = xiapi.Camera()
@@ -44,50 +39,61 @@ cam.start_acquisition()
 # Transformation for PyTorch model
 transform = transforms.Compose([
     transforms.ToPILImage(),
-    transforms.Grayscale(num_output_channels=1),
     transforms.Resize((64, 64)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5], std=[0.5])
+    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # For 3 channels
 ])
 
 while True:
     cam.get_image(img)
     image = img.get_image_data_numpy()
+    # Convert RGBA to BGR
+    if image.shape[2] == 4:  # If the image has 4 channels (RGBA)
+        image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
+    print(image.shape)
     frame = cv2.resize(image, (480, 480))
 
     # Convert to grayscale
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    # frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # Detect faces in the frame
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5)
-    for (x, y, w, h) in faces:
-        # Crop the face from the frame
-        face = gray[y:y + h, x:x + w]
+    # Prepare the blob for face detection (keep it in BGR format)
+    blob = cv2.dnn.blobFromImage(frame, 1.0, (300, 300), (104.0, 177.0, 123.0))
+    face_net.setInput(blob)
+    detections = face_net.forward()
+    # Process detections
+    (h, w) = frame.shape[:2]
+    for i in range(detections.shape[2]):
+        confidence = detections[0, 0, i, 2]
+        if confidence > 0.5:  # Confidence threshold
+            # Extract bounding box
+            box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+            (x, y, x1, y1) = box.astype("int")
 
-        # Preprocess the face
-        face_resized = cv2.resize(face, (64, 64))
-        cv2.imshow('Input Image to NN', face_resized)
-        face_tensor = transform(face_resized).unsqueeze(0)  # Add batch dimension
+            # Ensure bounding box is within frame bounds
+            x, y, x1, y1 = max(0, x), max(0, y), min(w, x1), min(h, y1)
 
-        # Predict the probabilities for each class
-        with torch.no_grad():
-            predictions = F.softmax(model(face_tensor), dim=1).numpy()[0]
+            # Crop and preprocess the face
+            face = frame[y:y1, x:x1]
+            face_tensor = transform(face).unsqueeze(0)  # Add batch dimension
 
-        percentages = (predictions * 100).round(2)
+            # Make prediction
+            with torch.no_grad():
+                predictions = model(face_tensor)  # Forward pass
+                # percentages = (predictions * 100).round(2)
 
-        # Get the class with the highest probability
-        max_index = np.argmax(predictions)
-        predicted_class = class_labels[max_index]
+                probabilities = torch.softmax(predictions, dim=1)[0]  # Apply softmax to get probabilities
+                class_idx = torch.argmax(probabilities).item()  # Get class index
+                class_label = class_labels[class_idx]  # Map to class label
 
-        # Display the results on the frame
-        text = f'{predicted_class}: {percentages[max_index]}%'
-        cv2.putText(frame, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+            # Display results
+            text = f'{class_label}: {probabilities[class_idx].item() * 100:.2f}%'
+            cv2.putText(frame, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+            cv2.rectangle(frame, (x, y), (x1, y1), (255, 0, 0), 2)
 
-        # Print percentages for all classes
-        for i, (label, percentage) in enumerate(zip(class_labels, percentages)):
-            class_text = f'{label}: {percentage}%'
-            cv2.putText(frame, class_text, (10, 30 + i * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
+            # Print percentages for all classes
+            # for j, (label, percentage) in enumerate(zip(class_labels, percentages)):
+            #     class_text = f'{label}: {percentage}%'
+            #     cv2.putText(frame, class_text, (10, 30 + j * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
 
     # Display the frame
     cv2.imshow('Facial Expression Recognition', frame)

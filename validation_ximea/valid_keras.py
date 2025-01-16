@@ -5,11 +5,11 @@ from ximea import xiapi
 
 # sudo tee /sys/module/usbcore/parameters/usbfs_memory_mb >/dev/null <<<0
 # Load the pre-trained model
-model = load_model('resEmoteNet.h5')
+model = load_model('seven_expresions.h5')
 
 # Define class labels for the 7 classes
-# class_labels = ['angry', 'happy', 'surprise', 'disgust', 'neutral', 'fear', 'sad']
-class_labels = ['surprise', 'scared', 'disgust', 'happy', 'sad', 'angry', 'neutral'] #for resEmoteNet
+class_labels = ['angry', 'happy', 'surprise', 'disgust', 'neutral', 'fear', 'sad']
+# class_labels = ['surprise', 'scared', 'disgust', 'happy', 'sad', 'angry', 'neutral'] #for resEmoteNet
 
 # Initialize Haar Cascade for face detection (you can use MTCNN if preferred)
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
