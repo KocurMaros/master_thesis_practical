@@ -2,4 +2,6 @@ __pycache__/
 .ipynb_checkpoints
 fer2013/
 raf-db/
+RAF-DB/
 *.h5
+*.pth
