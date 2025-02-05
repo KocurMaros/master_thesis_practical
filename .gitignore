@@ -7,3 +7,6 @@ RAF-DB/
 *.pth
 *.odt#
 *.odp#
+build/
+install/
+log/
