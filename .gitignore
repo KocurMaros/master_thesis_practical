@@ -5,3 +5,5 @@ raf-db/
 RAF-DB/
 *.h5
 *.pth
+*.odt#
+*.odp#
