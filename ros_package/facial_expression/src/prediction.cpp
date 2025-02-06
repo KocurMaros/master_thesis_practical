@@ -5,7 +5,7 @@ class PredictionSubscriber : public rclcpp::Node {
 public:
     PredictionSubscriber() : Node("prediction_subscriber") {
         subscription_ = this->create_subscription<std_msgs::msg::String>(
-            "predictions", 10,
+            "emotion_prediction", 10,
             std::bind(&PredictionSubscriber::topic_callback, this, std::placeholders::_1));
     }
 
@@ -19,6 +19,7 @@ private:
 
 int main(int argc, char **argv) {
     rclcpp::init(argc, argv);
+    std::cout << "Prediction subscriber started" << std::endl;
     rclcpp::spin(std::make_shared<PredictionSubscriber>());
     rclcpp::shutdown();
     return 0;

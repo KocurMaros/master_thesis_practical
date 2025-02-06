@@ -23,18 +23,18 @@ face_net = cv2.dnn.readNetFromCaffe(
 )
 
 # Open the webcam
-cam = xiapi.Camera()
+cap = xiapi.Camera()
 print('Opening first camera...')
-cam.open_device()
-cam.set_exposure(50000)
-cam.set_param("imgdataformat", "XI_RGB32")
-cam.set_param("auto_wb", 1)
+cap.open_device()
+cap.set_exposure(50000)
+cap.set_param("imgdataformat", "XI_RGB32")
+cap.set_param("auto_wb", 1)
 
-print('Exposure was set to %i us' % cam.get_exposure())
+print('Exposure was set to %i us' % cap.get_exposure())
 img = xiapi.Image()
 
 print('Starting data acquisition...')
-cam.start_acquisition()
+cap.start_acquisition()
 
 # Transformation for PyTorch model
 transform = transforms.Compose([
@@ -45,7 +45,7 @@ transform = transforms.Compose([
 ])
 
 while True:
-    cam.get_image(img)
+    cap.get_image(img)
     image = img.get_image_data_numpy()
     # Convert RGBA to BGR
     if image.shape[2] == 4:  # If the image has 4 channels (RGBA)
@@ -103,5 +103,5 @@ while True:
         break
 
 # Release the camera and close all windows
-cam.release()
+cap.release()
 cv2.destroyAllWindows()

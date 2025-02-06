@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 from torchvision import transforms
 from approach.ResEmoteNet import ResEmoteNet
+from ximea import xiapi
 
 class EmotionRecognitionNode(Node):
     def __init__(self):
@@ -28,11 +29,17 @@ class EmotionRecognitionNode(Node):
         )
 
         # Open the OpenCV camera
-        self.cap = cv2.VideoCapture(0)
-        if not self.cap.isOpened():
-            self.get_logger().error("Error: Cannot open webcam")
-            exit()
+        self.cap = xiapi.Camera()
+        self.cap.open_device()
+        self.cap.set_exposure(50000)
+        self.cap.set_param("imgdataformat", "XI_RGB32")
+        self.cap.set_param("auto_wb", 1)
+        print('Exposure was set to %i us' % self.cap.get_exposure())
+        self.img = xiapi.Image()
+        print('Starting data acquisition...')
 
+        self.cap.start_acquisition()
+        
         # Transformation for PyTorch model
         self.transform = transforms.Compose([
             transforms.ToPILImage(),
@@ -45,13 +52,21 @@ class EmotionRecognitionNode(Node):
         self.timer = self.create_timer(0.1, self.process_frame)
 
     def process_frame(self):
-        ret, frame = self.cap.read()
-        if not ret:
-            self.get_logger().error("Error: Cannot read frame from webcam")
-            return
+        self.cap.get_image(self.img)
+        image = self.img.get_image_data_numpy()
+        # Convert RGBA to BGR
+        if image.shape[2] == 4:  # If the image has 4 channels (RGBA)
+            image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
 
-        # Resize for faster processing
-        frame = cv2.resize(frame, (480, 480))
+        frame = cv2.resize(image, (480, 480))
+        
+        # ret, frame = self.cap.read()
+        # if not ret:
+        #     self.get_logger().error("Error: Cannot read frame from webcam")
+        #     return
+
+        # # Resize for faster processing
+        # frame = cv2.resize(frame, (480, 480))
 
         # Prepare the blob for face detection
         blob = cv2.dnn.blobFromImage(frame, 1.0, (300, 300), (104.0, 177.0, 123.0))
