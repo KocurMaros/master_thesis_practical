@@ -26,5 +26,8 @@ find_package(ament_cmake_python REQUIRED)
 install(PROGRAMS
   scripts/prediction.py
   DESTINATION lib/${PROJECT_NAME})
-
+# Install launch files
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}/
+)
 ament_package()
