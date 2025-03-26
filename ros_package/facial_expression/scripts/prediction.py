@@ -11,13 +11,15 @@ from ximea import xiapi
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-from flask import Flask, Response
+from flask import Flask, Response, request
 import threading
 import signal
 import sys
 class EmotionRecognitionNode(Node):
     def __init__(self):
         super().__init__('emotion_recohgnition_node')
+        # Add this line to your existing __init__ method
+        self.running = True
         self.publisher_ = self.create_publisher(String, 'emotion_prediction', 10)
         
         self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
@@ -45,15 +47,37 @@ class EmotionRecognitionNode(Node):
             'scripts/deploy.prototxt',
             'scripts/res10_300x300_ssd_iter_140000.caffemodel'
         )
-        # Access the webcam
-        self.cap = xiapi.Camera()
-        self.cap.open_device()
-        self.cap.set_exposure(50000)
-        self.cap.set_param("imgdataformat", "XI_RGB24")
-        self.cap.set_param("auto_wb", 1)
-        self.img = xiapi.Image()
-        print('Starting data acquisition...')
-        self.cap.start_acquisition()
+        # Try to open Ximea camera, fall back to default camera if not available
+        try:
+            self.get_logger().info('Attempting to open Ximea camera...')
+            self.using_ximea = True
+            self.cap = xiapi.Camera()
+            self.cap.open_device()
+            self.cap.set_exposure(50000)
+            self.cap.set_param("imgdataformat", "XI_RGB24")
+            self.cap.set_param("auto_wb", 1)
+            self.img = xiapi.Image()
+            self.get_logger().info('Ximea camera opened successfully')
+            print('Starting data acquisition...')
+            self.cap.start_acquisition()
+        except Exception as e:
+            self.get_logger().warning(f'Failed to open Ximea camera: {e}')
+            self.get_logger().info('Attempting to open default camera...')
+            self.using_ximea = False
+            self.cap = cv2.VideoCapture(0)
+            if not self.cap.isOpened():
+                self.get_logger().error('Failed to open default camera')
+                raise RuntimeError("No camera available")
+            self.get_logger().info('Default camera opened successfully')
+        
+        # self.cap = xiapi.Camera()
+        # self.cap.open_device()
+        # self.cap.set_exposure(50000)
+        # self.cap.set_param("imgdataformat", "XI_RGB24")
+        # self.cap.set_param("auto_wb", 1)
+        # self.img = xiapi.Image()
+        # print('Starting data acquisition...')
+        # self.cap.start_acquisition()
         
         # Settings for text
         self.font = cv2.FONT_HERSHEY_SIMPLEX
@@ -73,20 +97,35 @@ class EmotionRecognitionNode(Node):
         self.thread = threading.Thread(target=self.run_flask)
         self.thread.start()
     def process_frame_for_web(self):
-        self.cap.get_image(self.img)
-        image = self.img.get_image_data_numpy()
-        # image = image[:, :, [2, 1, 0]]  # RGB to BGR
-        frame = cv2.resize(image, (800, 800))
-        
-        # Convert to JPEG for streaming
-        ret, jpeg = cv2.imencode('.jpg', frame)
-        return jpeg.tobytes()
+        try:
+            if not self.running:
+                return None
+                
+            if self.using_ximea:
+                self.cap.get_image(self.img)
+                image = self.img.get_image_data_numpy()
+            else:
+                ret, image = self.cap.read()
+                if not ret:
+                    return None
+                    
+            # image = image[:, :, [2, 1, 0]]  # RGB to BGR
+            frame = cv2.resize(image, (800, 800))
+            
+            # Convert to JPEG for streaming
+            ret, jpeg = cv2.imencode('.jpg', frame)
+            return jpeg.tobytes()
+        except Exception as e:
+            self.get_logger().error(f"Error in process_frame_for_web: {e}")
+            return None
 
     def gen_frames(self):
-        while True:
+        while self.running:
             frame_bytes = self.process_frame_for_web()
+            if frame_bytes is None:
+                break
             yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n\r\n')
+                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n\r\n')
     def gen(self):
         """Generate Server-Sent Events (SSE) for emotion updates"""
         import time
@@ -114,7 +153,13 @@ class EmotionRecognitionNode(Node):
         @app.route('/emotion')
         def emotion():
             return Response(self.gen(), mimetype='text/event-stream')
-
+        @app.route('/shutdown')
+        def shutdown():
+            func = request.environ.get('werkzeug.server.shutdown')
+            if func is None:
+                raise RuntimeError('Not running with the Werkzeug Server')
+            func()
+            return 'Server shutting down...'
         @app.route('/')
         def index():
             return '''
@@ -193,7 +238,7 @@ class EmotionRecognitionNode(Node):
         for (x, y, w, h) in faces:
             # Draw bounding box on face
 
-            # cv2.rectangle(video_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            cv2.rectangle(video_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
             # Crop bounding box
             if self.counter == 0:
@@ -267,27 +312,63 @@ class EmotionRecognitionNode(Node):
         return faces_detected
 
     def process_frame(self):
-        self.cap.get_image(self.img)
-        image = self.img.get_image_data_numpy()
-        image = image[:, :, [2, 1, 0]]  # RGB to BGR
-        frame = cv2.resize(image, (480, 480))
-        
-        # self.detect_bounding_box(frame)
-        self.detect_bounding_box_sgg(frame)
-        # cv2.imshow("ResEmoteNet", frame)
-        
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            self.cap.stop_acquisition()
-            self.cap.close_device()
-            cv2.destroyAllWindows()
-            self.destroy_node()
-            rclpy.shutdown()
-            return
-        
-        self.counter += 1
-        if self.counter == self.evaluation_frequency:
-            self.counter = 0
+        try:
+            if self.using_ximea:
+                self.cap.get_image(self.img)
+                image = self.img.get_image_data_numpy()
+                image = image[:, :, [2, 1, 0]]  # RGB to BGR
+            else:
+                ret, image = self.cap.read()
+                if not ret:
+                    self.get_logger().error("Failed to capture frame from default camera")
+                    return
+                    
+            frame = cv2.resize(image, (480, 480))
             
+            self.detect_bounding_box(frame)
+            # self.detect_bounding_box_sgg(frame)
+            # cv2.imshow("ResEmoteNet", frame)
+            
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                self.cleanup()
+                return
+            
+            self.counter += 1
+            if self.counter == self.evaluation_frequency:
+                self.counter = 0
+        except Exception as e:
+            self.get_logger().error(f"Error in process_frame: {e}")
+            self.cleanup()
+    def cleanup(self):
+        """Clean up resources when shutting down"""
+        self.get_logger().info('Shutting down...')
+        
+        # Flag to stop threads
+        self.running = False
+        
+        # Stop the camera
+        try:
+            if self.using_ximea:
+                self.cap.stop_acquisition()
+                self.cap.close_device()
+            else:
+                self.cap.release()
+            self.get_logger().info('Camera stopped')
+        except Exception as e:
+            self.get_logger().error(f'Error stopping camera: {e}')
+        
+        # Close OpenCV windows
+        cv2.destroyAllWindows()
+        
+        # Stop Flask server thread
+        try:
+            import requests
+            requests.get('http://localhost:5000/shutdown')
+        except:
+            pass
+            
+        self.get_logger().info('Cleanup complete')
+
 def signal_handler(sig, frame):
     """Handle Ctrl+C and other termination signals"""
     print('\nReceived termination signal. Shutting down...')
@@ -313,9 +394,10 @@ def main(args=None):
         print(f"Exception in main loop: {e}")
     finally:
         # Ensure cleanup happens
-        node.cleanup()
-        node.cap.stop_acquisition()
-        node.cap.close_device()
+        try:
+            node.cleanup()
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
         rclpy.shutdown()
 
 
