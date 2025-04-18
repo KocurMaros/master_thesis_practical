@@ -18,7 +18,7 @@ services:
     volumes:
       - .:/workspace
     working_dir: /workspace
-    stdin_open: true
+    stdin_open: truescripts/
     tty: true
     ports:
       - "8888:8888"
