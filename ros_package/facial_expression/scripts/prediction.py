@@ -15,120 +15,115 @@ from flask import Flask, Response, request
 import threading
 import signal
 import sys
+from sensor_msgs.msg import Image as RosImage
+from cv_bridge import CvBridge
+from multiprocessing import Process
+import time
 class EmotionRecognitionNode(Node):
     def __init__(self):
-        super().__init__('emotion_recohgnition_node')
-        # Add this line to your existing __init__ method
+        super().__init__('emotion_recognition_node')
         self.running = True
         self.publisher_ = self.create_publisher(String, 'emotion_prediction', 10)
         
+        self.image_subscriber = self.create_subscription(
+            RosImage,
+            '/rgb_stream/ximea',
+            self.image_callback,
+            10
+        )
+
+        self.bridge = CvBridge()
+        self.last_frame = None  # Store the last received image
+        self.last_frame_lock = threading.Lock()
+
+        # Set up model
         self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-        
-        # Emotions labels
         self.emotions = ['happy', 'surprise', 'sad', 'anger', 'disgust', 'fear', 'neutral']
-        
         self.model = ResEmoteNet().to(self.device)
-        checkpoint = torch.load('scripts/rafdb_model.pth', weights_only=True)
+        checkpoint = torch.load('/home/collab/collab_ws/src/facial_expression/scripts/rafdb_model.pth', weights_only=True)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.model.eval()
-        
+
         self.transform = transforms.Compose([
             transforms.Resize((64, 64)),
             transforms.Grayscale(num_output_channels=3),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
-        
+
         self.face_classifier = cv2.CascadeClassifier(
             cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         )
-        # Load the DNN face detector (SSD)
         self.face_net = cv2.dnn.readNetFromCaffe(
-            'scripts/deploy.prototxt',
-            'scripts/res10_300x300_ssd_iter_140000.caffemodel'
+            '/home/collab/collab_ws/src/facial_expression/scripts/deploy.prototxt',
+            '/home/collab/collab_ws/src/facial_expression/scripts/res10_300x300_ssd_iter_140000.caffemodel'
         )
-        # Try to open Ximea camera, fall back to default camera if not available
-        try:
-            self.get_logger().info('Attempting to open Ximea camera...')
-            self.using_ximea = True
-            self.cap = xiapi.Camera()
-            self.cap.open_device()
-            self.cap.set_exposure(50000)
-            self.cap.set_param("imgdataformat", "XI_RGB24")
-            self.cap.set_param("auto_wb", 1)
-            self.img = xiapi.Image()
-            self.get_logger().info('Ximea camera opened successfully')
-            print('Starting data acquisition...')
-            self.cap.start_acquisition()
-        except Exception as e:
-            self.get_logger().warning(f'Failed to open Ximea camera: {e}')
-            self.get_logger().info('Attempting to open default camera...')
-            self.using_ximea = False
-            self.cap = cv2.VideoCapture(0)
-            if not self.cap.isOpened():
-                self.get_logger().error('Failed to open default camera')
-                raise RuntimeError("No camera available")
-            self.get_logger().info('Default camera opened successfully')
-        
-        # self.cap = xiapi.Camera()
-        # self.cap.open_device()
-        # self.cap.set_exposure(50000)
-        # self.cap.set_param("imgdataformat", "XI_RGB24")
-        # self.cap.set_param("auto_wb", 1)
-        # self.img = xiapi.Image()
-        # print('Starting data acquisition...')
-        # self.cap.start_acquisition()
-        
-        # Settings for text
+
         self.font = cv2.FONT_HERSHEY_SIMPLEX
         self.font_scale = 1.2
-        self.font_color = (0, 255, 0)  # This is BGR color
+        self.font_color = (0, 255, 0)
         self.thickness = 3
         self.line_type = cv2.LINE_AA
-        
+
         self.max_emotion = ''
         self.counter = 0
         self.evaluation_frequency = 5
-        
-        # Create timer for processing frames
+
         self.timer = self.create_timer(0.1, self.process_frame)
 
-        #create a thread to run the Flask app
-        self.thread = threading.Thread(target=self.run_flask)
-        self.thread.start()
+        self.flask_thread = threading.Thread(target=self.run_flask, daemon=True)
+        self.flask_thread.start()
+        # self.thread = threading.Thread(target=self.run_flask)
+        # self.thread.start()
+
     def process_frame_for_web(self):
         try:
-            if not self.running:
-                return None
-                
-            if self.using_ximea:
-                self.cap.get_image(self.img)
-                image = self.img.get_image_data_numpy()
-            else:
-                ret, image = self.cap.read()
-                if not ret:
+            with self.last_frame_lock:
+                if self.last_frame is None:
+                    print("No frame available")
                     return None
-                    
-            # image = image[:, :, [2, 1, 0]]  # RGB to BGR
+                image = self.last_frame.copy()
+
+            #print(f"[DEBUG] Before resize: {image.shape}, dtype: {image.dtype}")
             frame = cv2.resize(image, (800, 800))
-            
-            # Convert to JPEG for streaming
+            #print(f"[DEBUG] After resize: {frame.shape}, dtype: {frame.dtype}")
+
+            if self.max_emotion:
+                cv2.putText(frame, self.max_emotion, (10, 40), self.font,
+                            self.font_scale, self.font_color, self.thickness, self.line_type)
+
             ret, jpeg = cv2.imencode('.jpg', frame)
+            if not ret:
+                print("[ERROR] JPEG encoding failed.")
+                return None
+
+            #print("[DEBUG] JPEG encoding success.")
             return jpeg.tobytes()
         except Exception as e:
-            self.get_logger().error(f"Error in process_frame_for_web: {e}")
+            print(f"[ERROR] in process_frame_for_web: {e}")
             return None
+
+
+
+
 
     def gen_frames(self):
         while self.running:
-            frame_bytes = self.process_frame_for_web()
-            if frame_bytes is None:
-                break
-            yield (b'--frame\r\n'
-                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n\r\n')
+            try:
+                frame_bytes = self.process_frame_for_web()
+                #_ = len(frame_bytes)  # Forces evaluation without printing
+                #frame_bytes[:1]  # Access forces evaluation
+                if frame_bytes is None:
+                    time.sleep(0.05)
+                    continue
+                time.sleep(0.05)
+                yield (b'--frame\r\n'
+                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n\r\n')
+            except Exception as e:
+                self.get_logger().error(f"Error in gen_frames: {e}")
+                time.sleep(0.1)
     def gen(self):
         """Generate Server-Sent Events (SSE) for emotion updates"""
-        import time
         while True:
             try:
                 # Format as Server-Sent Event
@@ -310,66 +305,51 @@ class EmotionRecognitionNode(Node):
                 # self.print_max_emotion(x1, y1, video_frame, self.max_emotion)
         
         return faces_detected
+    def image_callback(self, msg):
+        try:
+            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            if cv_image.dtype != np.uint8:
+                cv_image = cv_image.astype(np.uint8)
+
+            if len(cv_image.shape) == 2:  # grayscale image
+                cv_image = cv2.cvtColor(cv_image, cv2.COLOR_GRAY2BGR)
+
+            with self.last_frame_lock:
+                self.last_frame = cv_image
+            #self.get_logger().info(f"Received image: shape={cv_image.shape}, dtype={cv_image.dtype}")
+        except Exception as e:
+            self.get_logger().error(f"Error converting ROS image: {e}")
 
     def process_frame(self):
         try:
-            if self.using_ximea:
-                self.cap.get_image(self.img)
-                image = self.img.get_image_data_numpy()
-                image = image[:, :, [2, 1, 0]]  # RGB to BGR
-            else:
-                ret, image = self.cap.read()
-                if not ret:
-                    self.get_logger().error("Failed to capture frame from default camera")
+            with self.last_frame_lock:
+                if self.last_frame is None:
                     return
-                    
-            frame = cv2.resize(image, (480, 480))
-            
+                frame = self.last_frame.copy()
+
+            frame = cv2.resize(frame, (480, 480))
             self.detect_bounding_box(frame)
-            # self.detect_bounding_box_sgg(frame)
-            # cv2.imshow("ResEmoteNet", frame)
-            
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                self.cleanup()
-                return
-            
+
             self.counter += 1
             if self.counter == self.evaluation_frequency:
                 self.counter = 0
         except Exception as e:
             self.get_logger().error(f"Error in process_frame: {e}")
-            self.cleanup()
+
     def cleanup(self):
         """Clean up resources when shutting down"""
         self.get_logger().info('Shutting down...')
-        
-        # Flag to stop threads
+
         self.running = False
-        
-        # Stop the camera
-        try:
-            if self.using_ximea:
-                self.cap.stop_acquisition()
-                self.cap.close_device()
-            else:
-                self.cap.release()
-            self.get_logger().info('Camera stopped')
-        except Exception as e:
-            self.get_logger().error(f'Error stopping camera: {e}')
-        
-        # Close OpenCV windows
+
+        # Close OpenCV windows (even though you're not showing them)
         cv2.destroyAllWindows()
+
         
-        # Stop Flask server thread
-        try:
-            import requests
-            requests.get('http://localhost:5000/shutdown')
-        except:
-            pass
-            
+
         self.get_logger().info('Cleanup complete')
 
-def signal_handler(sig, frame):
+def signal_handler(sig, frame):#
     """Handle Ctrl+C and other termination signals"""
     print('\nReceived termination signal. Shutting down...')
     if 'node' in globals():
