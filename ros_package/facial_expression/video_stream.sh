@@ -13,8 +13,8 @@ cleanup() {
 trap cleanup SIGINT SIGTERM EXIT
 # sudo tee /sys/module/usbcore/parameters/usbfs_memory_mb >/dev/null <<<0
 # Activate virtual environment
-source /home/collab/virt_enviroments/facial_expressions/bin/activate
-python3 /home/collab/collab_ws/src/facial_expression/scripts/camera_streamer_node.py
+source ~/ros2_ws/.virt_env/bin/activate
+python3 ~/ros2_ws/src/facial_expression/scripts/camera_streamer_node.py
 
 # This will run after the node exits or is interrupted
 cleanup

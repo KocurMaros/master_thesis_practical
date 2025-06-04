@@ -13,8 +13,8 @@ cleanup() {
 trap cleanup SIGINT SIGTERM EXIT
 # sudo tee /sys/module/usbcore/parameters/usbfs_memory_mb >/dev/null <<<0
 # Activate virtual environment
-source /home/collab/virt_enviroments/facial_expressions/bin/activate
-python3 /home/collab/collab_ws/src/facial_expression/scripts/prediction.py &
+source /~/ros2_ws/.virt_env/facial_expressions/bin/activate
+python3 ~/ros2_ws/src/facial_expression/scripts/prediction.py &
 # Source ROS2 workspace
 # source /opt/ros/humble/setup.bash
 
