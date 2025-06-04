@@ -106,7 +106,7 @@ $ cp -r /path/to/your/master_thesis_practical/facial_expression ~/ros2_ws/src/
 $ python3.10 -m venv .virt_env
 $ source .virt_env/bin/activate
 $ pip install -r req.txt
-$ cp /opt/XIMEA/lib .virt_env/lib/python3.10/site-packages/ximea
+$ cp /path/to/downloaded/ximea/package/api/Python/v3/ximea/ .virt_env/lib/python3.10/site-packages/ximea
 ```
 #### Build the ROS2 Package
 
